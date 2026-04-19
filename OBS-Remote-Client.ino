@@ -24,35 +24,75 @@
 #include <FastLED.h> // https://wiki.dfrobot.com/FireBeetle_Board_ESP32_E_SKU_DFR0654#9.3%20RGB%20LED
 
 // WIFI
-const char *ssid = "*****";  // Change this to your WiFi SSID
-const char *password = "*****";  // Change this to your WiFi password
+const char *ssid = "KOSTIS-XPS";  // Change this to your WiFi SSID
+const char *password = "kostis123";  // Change this to your WiFi password
 
 // Websockets
-const char* websockets_server_host = "192.168.1.142"; //Enter server adress
+const char* websockets_server_host = "192.168.137.1"; //Enter server adress
 const uint16_t websockets_server_port = 4455; // Enter server port
 using namespace websockets;
 WebsocketsClient client;
 
 // FAST LED
-#define NUM_LEDS 1     //Number of RGB LED beads
-#define DATA_PIN D8    //The pin for controlling RGB LED
-#define LED_TYPE NEOPIXEL    //RGB LED strip type
-CRGB leds[NUM_LEDS];    //Instantiate RGB LED
+#define NUM_LEDS 1          //Number of RGB LED beads
+#define DATA_PIN D8         //The pin for controlling RGB LED
+#define LED_TYPE NEOPIXEL   //RGB LED strip type
+#define RECORDING_LED D9    // LED Pin for recording detection
+CRGB leds[NUM_LEDS];        //Instantiate RGB LED
+
+enum LedStatus {
+  INIT,
+  WAITING,
+  READY,
+  RECORDING,
+  UNKNOWN
+};
 
 struct Button {          //Define the button struct
     const uint8_t PIN;   //Define button pin
     bool pressed;        //Determine if the button is pressed, return true if it's pressed
     volatile unsigned long lastPressTime;
 };
-Button button = {27, false, 0};     //Instantiated a button, and use the on-board button.
+// Instantiated a button, and use the on-board button.
+// Button 26 is D3 PIN on on Firebeattle ESP32-e (I used)
+Button button = {26, false, 0};
+
 void ARDUINO_ISR_ATTR isr() {    //Interrupt processing function
     unsigned long currentTime = millis();
     
     // If 250ms have passed since the last trigger, it's a real press
     if (currentTime - button.lastPressTime > 250) { 
         button.pressed = true;
-        button.lastPressTime = currentTime;
+        button.lastPressTime = currentTime; // Update the timer
     }
+}
+
+void updateStatus(LedStatus status) {
+  switch (status) { 
+    case INIT:
+      leds[0] = CRGB::Blue;
+      break;
+    case WAITING:
+      leds[0] = CRGB::Pink;
+      break;
+    case UNKNOWN:
+      leds[0] = CRGB::DarkCyan;
+      break;
+    case READY:
+      leds[0] = CRGB::Green;
+      break;
+    case RECORDING:
+      leds[0] = CRGB::Red;
+      break;
+  }
+
+  if (status == RECORDING) {
+    digitalWrite(RECORDING_LED, HIGH);
+  } else {
+    digitalWrite(RECORDING_LED, LOW);
+  }
+
+  FastLED.show();
 }
 
 void onMessageCallback(WebsocketsMessage message) {
@@ -67,8 +107,7 @@ void onMessageCallback(WebsocketsMessage message) {
       Serial.print(F("deserializeJson() failed: "));
       Serial.println(error.f_str());
 
-      leds[0] = CRGB::DarkCyan;
-      FastLED.show();
+      updateStatus(UNKNOWN);
       
       return;
     }
@@ -76,21 +115,17 @@ void onMessageCallback(WebsocketsMessage message) {
     if (doc["op"] == 5){
       if (!strcmp(doc["d"]["eventType"].as<const char*>(), "RecordStateChanged")){
         if (doc["d"]["eventData"]["outputActive"]){
-          leds[0] = CRGB::Red;
-          FastLED.show();
+          updateStatus(RECORDING);
         } else {
-          leds[0] = CRGB::Green;
-          FastLED.show();
+          updateStatus(READY);
         }
       }
     } else if(doc["op"] == 7) {
       if (!strcmp(doc["d"]["requestType"].as<const char*>(), "GetRecordStatus")){
          if (doc["d"]["responseData"]["outputActive"]){
-          leds[0] = CRGB::Red;
-          FastLED.show();
+          updateStatus(RECORDING);
          } else {
-          leds[0] = CRGB::Green;
-          FastLED.show();
+           updateStatus(READY);
         }
       }
     }
@@ -119,9 +154,11 @@ void onEventsCallback(WebsocketsEvent event, String data) {
 void setup() {
   Serial.begin(115200);
   FastLED.addLeds<LED_TYPE, DATA_PIN>(leds, NUM_LEDS);
-  leds[0] = CRGB::Blue;
-  FastLED.show();
+  pinMode(RECORDING_LED, OUTPUT);
+  digitalWrite(RECORDING_LED, LOW);
 
+  updateStatus(INIT);
+  
   // Button setup and interrupt
   pinMode(button.PIN, INPUT_PULLUP);   
   attachInterrupt(button.PIN, isr, FALLING);
@@ -173,9 +210,8 @@ void loop() {
   if (button.pressed) {
     button.pressed = false;
 
-    leds[0] = CRGB::Pink;
-    FastLED.show();
-
+    updateStatus(WAITING);
+    
     Serial.printf("ToggleRecording in loop called");
     toggleRecording();
    
